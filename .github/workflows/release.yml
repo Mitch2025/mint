@@ -1,6 +1,7 @@
 name: Cargo Release Workflow
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - 'v*'
