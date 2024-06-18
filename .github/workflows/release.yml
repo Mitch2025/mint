@@ -40,8 +40,8 @@ on:
   push:
     tags:
       - '*-?v[0-9]+*'
-   workflow_dispatch:   
-
+   workflow_dispatch:
+   
 jobs:
   # Create the Github Release™ so the packages have something to be uploaded to
   create-release:
