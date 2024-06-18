@@ -23,8 +23,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macOS-latest]
-        architecture: [x64, x86]
+        os: [windows-latest]
+        architecture: [x64]
         toolchain: [stable]
     steps:
       - uses: actions/checkout@v3
@@ -36,8 +36,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macOS-latest]
-        architecture: [x64, x86]
+        os: [windows-latest]
+        architecture: [x64]
         toolchain: [stable]
     steps:
       - uses: actions/checkout@v3
@@ -58,9 +58,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [ ubuntu-latest, windows-latest, macOS-latest ]
-        architecture: [ x64, x86 ]
-        toolchain: [ stable ]
+        os: [windows-latest]
+        architecture: [x64]
+        toolchain: [stable]
     permissions:
       contents: write
     steps:
