@@ -42,7 +42,7 @@ pub enum Message {
     FetchModProgress(FetchModProgress),
     UpdateCache(UpdateCache),
     CheckUpdates(CheckUpdates),
-    LintMods(LintMods),
+    LintMods(Box<LintMods>),
     SelfUpdate(SelfUpdate),
     FetchSelfUpdateProgress(FetchSelfUpdateProgress),
 }
@@ -242,10 +242,10 @@ pub struct FetchModProgress {
 
 impl FetchModProgress {
     fn receive(self, app: &mut App) {
-        if let Some(MessageHandle { rid, state, .. }) = &mut app.integrate_rid {
-            if *rid == self.rid {
-                state.insert(self.spec, self.progress);
-            }
+        if let Some(MessageHandle { rid, state, .. }) = &mut app.integrate_rid
+            && *rid == self.rid
+        {
+            state.insert(self.spec, self.progress);
         }
     }
 }
@@ -339,11 +339,10 @@ impl CheckUpdates {
                             .tag_name
                             .strip_prefix('v')
                             .map(semver::Version::parse),
-                    ) {
-                        if release_version > version {
-                            app.available_update = Some(release);
-                            app.show_update_time = Some(SystemTime::now());
-                        }
+                    ) && release_version > version
+                    {
+                        app.available_update = Some(release);
+                        app.show_update_time = Some(SystemTime::now());
                     }
                 }
                 Err(e) => tracing::warn!("failed to fetch update {e}"),
@@ -448,10 +447,13 @@ impl LintMods {
                 Err(e) => Err(e),
             };
 
-            tx.send(Message::LintMods(LintMods {
-                rid,
-                result: report_res,
-            }))
+            tx.send(Message::LintMods(
+                LintMods {
+                    rid,
+                    result: report_res,
+                }
+                .into(),
+            ))
             .await
             .unwrap();
             ctx.request_repaint();
@@ -591,10 +593,10 @@ pub struct FetchSelfUpdateProgress {
 
 impl FetchSelfUpdateProgress {
     fn receive(self, app: &mut App) {
-        if let Some(MessageHandle { rid, state, .. }) = &mut app.self_update_rid {
-            if *rid == self.rid {
-                *state = self.progress;
-            }
+        if let Some(MessageHandle { rid, state, .. }) = &mut app.self_update_rid
+            && *rid == self.rid
+        {
+            *state = self.progress;
         }
     }
 }

@@ -7,7 +7,7 @@ use fs_err as fs;
 use repak::PakWriter;
 use serde::Deserialize;
 use snafu::{prelude::*, Whatever};
-use tracing::info;
+use tracing::{info, warn};
 use uasset_utils::asset_registry::{AssetRegistry, Readable as _, Writable as _};
 use uasset_utils::paths::{PakPath, PakPathBuf, PakPathComponentTrait};
 use uasset_utils::splice::{
@@ -18,7 +18,7 @@ use unreal_asset::AssetBuilder;
 
 use crate::mod_lints::LintError;
 use crate::providers::{ModInfo, ProviderError, ReadSeek};
-use mint_lib::mod_info::{ApprovalStatus, Meta, MetaConfig, MetaMod, SemverVersion};
+use mint_lib::mod_info::{ApprovalStatus, Meta, MetaConfig, MetaMod};
 use mint_lib::DRGInstallation;
 
 use unreal_asset::{
@@ -165,12 +165,12 @@ pub enum IntegrationError {
     #[snafu(display("mod {:?}: I/O error encountered during its processing", mod_info.name))]
     CtxtIoError {
         source: std::io::Error,
-        mod_info: ModInfo,
+        mod_info: Box<ModInfo>,
     },
     #[snafu(display("mod {:?}: repak error encountered during its processing", mod_info.name))]
     CtxtRepakError {
         source: repak::Error,
-        mod_info: ModInfo,
+        mod_info: Box<ModInfo>,
     },
     #[snafu(display(
         "mod {:?}: modfile {} contains unexpected prefix",
@@ -178,7 +178,7 @@ pub enum IntegrationError {
         modfile_path
     ))]
     ModfileInvalidPrefix {
-        mod_info: ModInfo,
+        mod_info: Box<ModInfo>,
         modfile_path: String,
     },
     #[snafu(display(
@@ -187,7 +187,7 @@ pub enum IntegrationError {
     ))]
     CtxtGenericError {
         source: Box<dyn std::error::Error + Send + Sync>,
-        mod_info: ModInfo,
+        mod_info: Box<ModInfo>,
     },
     #[snafu(transparent)]
     ProviderError { source: ProviderError },
@@ -335,7 +335,7 @@ pub fn integrate<P: AsRef<Path>>(
             if let IntegrationError::IoError { source } = e {
                 IntegrationError::CtxtIoError {
                     source,
-                    mod_info: mod_info.clone(),
+                    mod_info: mod_info.clone().into(),
                 }
             } else {
                 e
@@ -357,7 +357,7 @@ pub fn integrate<P: AsRef<Path>>(
                 Ok((
                     j.strip_prefix("../../../")
                         .map_err(|_| IntegrationError::ModfileInvalidPrefix {
-                            mod_info: mod_info.clone(),
+                            mod_info: mod_info.clone().into(),
                             modfile_path: j.to_string(),
                         })?
                         .to_path_buf(),
@@ -389,12 +389,21 @@ pub fn integrate<P: AsRef<Path>>(
                     let asset = AssetBuilder::new(Cursor::new(uasset), EngineVersion::VER_UE4_27)
                         .bulk(Cursor::new(uexp))
                         .skip_data(true)
-                        .build()?;
+                        .build();
+
+                    let asset = match asset {
+                        Ok(asset) => asset,
+                        Err(err) => {
+                            warn!("failed to parse asset {normalized}: {err}");
+                            continue;
+                        }
+                    };
+
                     asset_registry
                         .populate(normalized.with_extension("").as_str(), &asset)
                         .map_err(|e| IntegrationError::CtxtGenericError {
                             source: e.into(),
-                            mod_info: mod_info.clone(),
+                            mod_info: mod_info.clone().into(),
                         })?;
                 }
                 _ => {}
@@ -597,15 +606,8 @@ impl<W: Write + Seek> ModBundleWriter<W> {
         config: MetaConfig,
         mods: &[(ModInfo, PathBuf)],
     ) -> Result<(), IntegrationError> {
-        let mut split = env!("CARGO_PKG_VERSION").split('.');
-        let version = SemverVersion {
-            major: split.next().unwrap().parse().unwrap(),
-            minor: split.next().unwrap().parse().unwrap(),
-            patch: split.next().unwrap().parse().unwrap(),
-        };
-
         let meta = Meta {
-            version,
+            version: mint_lib::built_info::version().into(),
             config,
             mods: mods
                 .iter()
@@ -852,14 +854,13 @@ fn hook_pcb<R: Read + Seek>(asset: &mut Asset<R>) {
         .iter_mut()
         .enumerate()
         .find_map(|(i, e)| {
-            if let unreal_asset::exports::Export::FunctionExport(func) = e {
-                if func
+            if let unreal_asset::exports::Export::FunctionExport(func) = e
+                && func
                     .get_base_export()
                     .object_name
                     .get_content(|n| n == "ReceiveBeginPlay")
-                {
-                    return Some((PackageIndex::from_export(i as i32).unwrap(), func));
-                }
+            {
+                return Some((PackageIndex::from_export(i as i32).unwrap(), func));
             }
             None
         })
@@ -1063,10 +1064,10 @@ fn patch<C: Seek + Read>(asset: &mut Asset<C>) -> Result<(), IntegrationError> {
         mut statement: TrackedStatement,
     ) -> Option<TrackedStatement> {
         walk(&mut statement.ex, &|ex| {
-            if let KismetExpression::ExCallMath(f) = ex {
-                if Some(f.stack_node) == is_modded || Some(f.stack_node) == is_modded_sandbox {
-                    *ex = ExFalse::default().into()
-                }
+            if let KismetExpression::ExCallMath(f) = ex
+                && (Some(f.stack_node) == is_modded || Some(f.stack_node) == is_modded_sandbox)
+            {
+                *ex = ExFalse::default().into()
             }
         });
         Some(statement)
@@ -1092,12 +1093,12 @@ fn patch_modding_tab<C: Seek + Read>(asset: &mut Asset<C>) -> Result<(), Integra
     for (_pi, statements) in statements.iter_mut() {
         for statement in statements {
             walk(&mut statement.ex, &|ex| {
-                if let KismetExpression::ExSetArray(arr) = ex {
-                    if arr.elements.len() == 2 {
-                        arr.elements.retain(|e| !matches!(e, KismetExpression::ExInstanceVariable(v) if v.variable.new.as_ref().unwrap().path.last().unwrap().get_content(|c| c == "BTN_Modding")));
-                        if arr.elements.len() != 2 {
-                            info!("patched modding tab visibility");
-                        }
+                if let KismetExpression::ExSetArray(arr) = ex
+                    && arr.elements.len() == 2
+                {
+                    arr.elements.retain(|e| !matches!(e, KismetExpression::ExInstanceVariable(v) if v.variable.new.as_ref().unwrap().path.last().unwrap().get_content(|c| c == "BTN_Modding")));
+                    if arr.elements.len() != 2 {
+                        info!("patched modding tab visibility");
                     }
                 }
             });

@@ -16,7 +16,7 @@ use std::{
     path::PathBuf,
 };
 
-use eframe::egui::{Button, CollapsingHeader, RichText, Visuals};
+use eframe::egui::{Button, CollapsingHeader, RichText};
 use eframe::epaint::{Pos2, Vec2};
 use eframe::{
     egui::{FontSelection, Layout, TextFormat, Ui},
@@ -62,9 +62,9 @@ pub fn gui(dirs: Dirs, args: Option<Vec<String>>) -> Result<(), MintError> {
         ..Default::default()
     };
     eframe::run_native(
-        &format!("mint {}", env!("CARGO_PKG_VERSION")),
+        &format!("mint {}", mint_lib::built_info::GIT_VERSION.unwrap()),
         options,
-        Box::new(|cc| Box::new(App::new(cc, dirs, args).unwrap())),
+        Box::new(|cc| Ok(Box::new(App::new(cc, dirs, args)?))),
     )
     .with_generic(|e| format!("{e}"))?;
     Ok(())
@@ -87,10 +87,18 @@ pub enum GuiTheme {
 }
 
 impl GuiTheme {
-    fn visuals(self) -> Visuals {
-        match self {
-            GuiTheme::Light => Visuals::light(),
-            GuiTheme::Dark => Visuals::dark(),
+    fn from_egui_theme(theme: egui::ThemePreference) -> Option<Self> {
+        match theme {
+            egui::ThemePreference::Dark => Some(GuiTheme::Dark),
+            egui::ThemePreference::Light => Some(GuiTheme::Light),
+            egui::ThemePreference::System => None,
+        }
+    }
+    fn into_egui_theme(theme: Option<Self>) -> egui::ThemePreference {
+        match theme {
+            Some(GuiTheme::Dark) => egui::ThemePreference::Dark,
+            Some(GuiTheme::Light) => egui::ThemePreference::Light,
+            None => egui::ThemePreference::System,
         }
     }
 }
@@ -121,7 +129,6 @@ impl SortBy {
 const MODIO_LOGO_PNG: &[u8] = include_bytes!("../../assets/modio-cog-blue.png");
 
 pub struct App {
-    default_visuals: Visuals,
     args: Option<Vec<String>>,
     tx: Sender<message::Message>,
     rx: Receiver<message::Message>,
@@ -190,7 +197,7 @@ impl LastAction {
         let duration = Instant::now().duration_since(self.timestamp);
         let seconds = duration.as_secs();
         if seconds < 60 {
-            format!("{}s ago", seconds)
+            format!("{seconds}s ago")
         } else if seconds < 3600 {
             format!("{}m ago", seconds / 60)
         } else {
@@ -206,7 +213,7 @@ enum LastActionStatus {
 
 impl App {
     fn new(
-        cc: &eframe::CreationContext,
+        _cc: &eframe::CreationContext,
         dirs: Dirs,
         args: Option<Vec<String>>,
     ) -> Result<Self, MintError> {
@@ -214,11 +221,6 @@ impl App {
         let state = State::init(dirs)?;
 
         Ok(Self {
-            default_visuals: cc
-                .integration_info
-                .system_theme
-                .map(|t| t.egui_visuals())
-                .unwrap_or_default(),
             args,
             tx,
             rx,
@@ -454,28 +456,28 @@ impl App {
                     ui.add_enabled(false, icon);
                 }
 
-                if mc.enabled {
-                    if let Some(req) = &self.integrate_rid {
-                        match req.state.get(&mc.spec) {
-                            Some(SpecFetchProgress::Progress { progress, size }) => {
-                                ui.add(
-                                    egui::ProgressBar::new(*progress as f32 / *size as f32)
-                                        .show_percentage()
-                                        .desired_width(100.0),
-                                );
-                            }
-                            Some(SpecFetchProgress::Complete) => {
-                                ui.add(egui::ProgressBar::new(1.0).desired_width(100.0));
-                            }
-                            None => {
-                                ui.spinner();
-                            }
+                if mc.enabled
+                    && let Some(req) = &self.integrate_rid
+                {
+                    match req.state.get(&mc.spec) {
+                        Some(SpecFetchProgress::Progress { progress, size }) => {
+                            ui.add(
+                                egui::ProgressBar::new(*progress as f32 / *size as f32)
+                                    .show_percentage()
+                                    .desired_width(100.0),
+                            );
+                        }
+                        Some(SpecFetchProgress::Complete) => {
+                            ui.add(egui::ProgressBar::new(1.0).desired_width(100.0));
+                        }
+                        None => {
+                            ui.spinner();
                         }
                     }
                 }
 
                 if let Some(info) = &info {
-                    egui::ComboBox::from_id_source(row_index)
+                    egui::ComboBox::from_id_salt(row_index)
                         .selected_text(
                             self.state
                                 .store
@@ -533,7 +535,7 @@ impl App {
                                     }
                                 })
                                 .speed(0.05)
-                                .clamp_range(RangeInclusive::new(-999, 999)),
+                                .range(RangeInclusive::new(-999, 999)),
                         )
                         .on_hover_text_at_pointer(
                             "Load Priority\nIn case of asset conflict, mods with higher priority take precedent.\nCan have duplicate values.",
@@ -545,7 +547,7 @@ impl App {
                         .on_hover_text_at_pointer("copy URL")
                         .clicked()
                     {
-                        ui.output_mut(|o| o.copied_text = mc.spec.url.to_string());
+                        ui.ctx().copy_text(mc.spec.url.to_string());
                     }
 
                     if mc.enabled {
@@ -645,7 +647,7 @@ impl App {
                         .on_hover_text_at_pointer("Copy URL")
                         .clicked()
                     {
-                        ui.output_mut(|o| o.copied_text = mc.spec.url.to_string());
+                        ui.ctx().copy_text(mc.spec.url.to_string());
                     }
 
                     let search = searchable_text(&mc.spec.url, &self.search_string, {
@@ -724,7 +726,7 @@ impl App {
                     .sorted_by(|a, b| comp((a.1 .0, a.1 .1.as_ref()), (b.1 .0, b.1 .1.as_ref())))
                     .enumerate()
                     .for_each(|(visual_index, (store_index, item))| {
-                        let mut frame = egui::Frame::none();
+                        let mut frame = egui::Frame::NONE;
                         if visual_index % 2 == 1 {
                             frame.fill = ui.visuals().faint_bg_color
                         }
@@ -740,7 +742,7 @@ impl App {
                     .show(
                         profile.mods.iter_mut().enumerate(),
                         |ui, (_index, item), handle, state| {
-                            let mut frame = egui::Frame::none();
+                            let mut frame = egui::Frame::NONE;
                             if state.dragged {
                                 frame.fill = ui.visuals().extreme_bg_color
                             } else if state.index % 2 == 1 {
@@ -815,12 +817,12 @@ impl App {
         {
             let now = SystemTime::now();
             let wait_time = Duration::from_secs(10);
-            egui::Area::new("available-update-overlay")
+            egui::Area::new("available-update-overlay".into())
                 .movable(false)
                 .fixed_pos(Pos2::ZERO)
                 .order(egui::Order::Background)
                 .show(ctx, |ui| {
-                    egui::Frame::none()
+                    egui::Frame::NONE
                         .fill(Color32::from_rgba_unmultiplied(0, 0, 0, 127))
                         .show(ui, |ui| {
                             ui.allocate_space(ui.available_size());
@@ -863,9 +865,11 @@ impl App {
                     .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
                     .resizable(false)
                     .show(ctx, |ui| {
-                        CommonMarkViewer::new("available-update")
-                            .max_image_width(Some(512))
-                            .show(ui, &mut self.cache, &update.body);
+                        CommonMarkViewer::new().max_image_width(Some(512)).show(
+                            ui,
+                            &mut self.cache,
+                            &update.body,
+                        );
                         ui.with_layout(egui::Layout::right_to_left(Align::TOP), |ui| {
                             if ui
                                 .add(egui::Button::new("Install update"))
@@ -899,7 +903,7 @@ impl App {
         };
 
         while let Ok((rid, res)) = window.rx.try_recv() {
-            if window.check_rid.as_ref().map_or(false, |r| rid == r.0) {
+            if window.check_rid.as_ref().is_some_and(|r| rid == r.0) {
                 match res {
                     Ok(()) => {
                         let window = self.window_provider_parameters.take().unwrap();
@@ -1029,15 +1033,14 @@ impl App {
                             if is_committed(&res) {
                                 try_save = true;
                             }
-                            if ui.button("browse").clicked() {
-                                if let Some(fsd_pak) = rfd::FileDialog::new()
+                            if ui.button("browse").clicked()
+                                && let Some(fsd_pak) = rfd::FileDialog::new()
                                     .add_filter("DRG Pak", &["pak"])
                                     .pick_file()
                                 {
                                     window.drg_pak_path = fsd_pak.to_string_lossy().to_string();
                                     window.drg_pak_path_err = None;
                                 }
-                            }
                         });
                         ui.end_row();
 
@@ -1066,11 +1069,13 @@ impl App {
                         ui.horizontal(|ui| {
                             ui.horizontal(|ui| {
                                 let config = &mut self.state.config;
-                                let changed = ui.selectable_value(&mut config.gui_theme, Some(GuiTheme::Light), "☀ Light").changed() ||
-                                    ui.selectable_value(&mut config.gui_theme, Some(GuiTheme::Dark), "🌙 Dark").changed() ||
-                                    ui.selectable_value(&mut config.gui_theme, None, "System").changed();
-                                if changed {
-                                    ctx.set_visuals(config.gui_theme.map(GuiTheme::visuals).unwrap_or_else(|| self.default_visuals.clone()));
+
+                                let old_theme = GuiTheme::into_egui_theme(config.gui_theme);
+                                let mut theme = old_theme;
+                                theme.radio_buttons(ui);
+                                if theme != old_theme {
+                                    ui.memory_mut(|m| m.options.theme_preference = theme);
+                                    config.gui_theme = GuiTheme::from_egui_theme(theme);
                                     config.save().unwrap();
                                 }
                             });
@@ -1281,8 +1286,8 @@ impl App {
                             .show(ui, |ui| {
                                 const AMBER: Color32 = Color32::from_rgb(255, 191, 0);
 
-                                if let Some(conflicting_mods) = &report.conflicting_mods {
-                                    if !conflicting_mods.is_empty() {
+                                if let Some(conflicting_mods) = &report.conflicting_mods
+                                    && !conflicting_mods.is_empty() {
                                         CollapsingHeader::new(
                                             RichText::new("⚠ Mods(s) with conflicting asset modifications detected")
                                                 .color(AMBER),
@@ -1292,8 +1297,7 @@ impl App {
                                             conflicting_mods.iter().for_each(|(path, mods)| {
                                                 CollapsingHeader::new(
                                                     RichText::new(format!(
-                                                        "⚠ Conflicting modification of asset `{}`",
-                                                        path
+                                                        "⚠ Conflicting modification of asset `{path}`"
                                                     ))
                                                     .color(AMBER),
                                                 )
@@ -1308,10 +1312,9 @@ impl App {
                                             });
                                         });
                                     }
-                                }
 
-                                if let Some(asset_register_bin_mods) = &report.asset_register_bin_mods {
-                                    if !asset_register_bin_mods.is_empty() {
+                                if let Some(asset_register_bin_mods) = &report.asset_register_bin_mods
+                                    && !asset_register_bin_mods.is_empty() {
                                         CollapsingHeader::new(
                                             RichText::new("ℹ Mod(s) with `AssetRegistry.bin` included detected")
                                                 .color(Color32::LIGHT_BLUE),
@@ -1336,10 +1339,9 @@ impl App {
                                             );
                                         });
                                     }
-                                }
 
-                                if let Some(shader_file_mods) = &report.shader_file_mods {
-                                    if !shader_file_mods.is_empty() {
+                                if let Some(shader_file_mods) = &report.shader_file_mods
+                                    && !shader_file_mods.is_empty() {
                                         CollapsingHeader::new(
                                             RichText::new(
                                                 "⚠ Mods(s) with shader files included detected",
@@ -1366,10 +1368,9 @@ impl App {
                                             );
                                         });
                                     }
-                                }
 
-                                if let Some(outdated_pak_version_mods) = &report.outdated_pak_version_mods {
-                                    if !outdated_pak_version_mods.is_empty() {
+                                if let Some(outdated_pak_version_mods) = &report.outdated_pak_version_mods
+                                    && !outdated_pak_version_mods.is_empty() {
                                         CollapsingHeader::new(
                                             RichText::new(
                                                 "⚠ Mod(s) with outdated pak version detected",
@@ -1391,10 +1392,9 @@ impl App {
                                             );
                                         });
                                     }
-                                }
 
-                                if let Some(empty_archive_mods) = &report.empty_archive_mods {
-                                    if !empty_archive_mods.is_empty() {
+                                if let Some(empty_archive_mods) = &report.empty_archive_mods
+                                    && !empty_archive_mods.is_empty() {
                                         CollapsingHeader::new(
                                             RichText::new(
                                                 "⚠ Mod(s) with empty archives detected",
@@ -1414,10 +1414,9 @@ impl App {
                                             });
                                         });
                                     }
-                                }
 
-                                if let Some(archive_with_only_non_pak_files_mods) = &report.archive_with_only_non_pak_files_mods {
-                                    if !archive_with_only_non_pak_files_mods.is_empty() {
+                                if let Some(archive_with_only_non_pak_files_mods) = &report.archive_with_only_non_pak_files_mods
+                                    && !archive_with_only_non_pak_files_mods.is_empty() {
                                         CollapsingHeader::new(
                                             RichText::new(
                                                 "⚠ Mod(s) with only non-`.pak` files detected",
@@ -1437,10 +1436,9 @@ impl App {
                                             });
                                         });
                                     }
-                                }
 
-                                if let Some(archive_with_multiple_paks_mods) = &report.archive_with_multiple_paks_mods {
-                                    if !archive_with_multiple_paks_mods.is_empty() {
+                                if let Some(archive_with_multiple_paks_mods) = &report.archive_with_multiple_paks_mods
+                                    && !archive_with_multiple_paks_mods.is_empty() {
                                         CollapsingHeader::new(
                                             RichText::new(
                                                 "⚠ Mod(s) with multiple `.pak`s detected",
@@ -1458,10 +1456,9 @@ impl App {
                                             });
                                         });
                                     }
-                                }
 
-                                if let Some(non_asset_file_mods) = &report.non_asset_file_mods {
-                                    if !non_asset_file_mods.is_empty() {
+                                if let Some(non_asset_file_mods) = &report.non_asset_file_mods
+                                    && !non_asset_file_mods.is_empty() {
                                         CollapsingHeader::new(
                                             RichText::new(
                                                 "⚠ Mod(s) with non-asset files detected",
@@ -1486,10 +1483,9 @@ impl App {
                                             });
                                         });
                                     }
-                                }
 
-                                if let Some(split_asset_pairs_mods) = &report.split_asset_pairs_mods {
-                                    if !split_asset_pairs_mods.is_empty() {
+                                if let Some(split_asset_pairs_mods) = &report.split_asset_pairs_mods
+                                    && !split_asset_pairs_mods.is_empty() {
                                         CollapsingHeader::new(
                                             RichText::new(
                                                 "⚠ Mod(s) with split {uexp, uasset} pairs detected",
@@ -1521,10 +1517,9 @@ impl App {
                                             });
                                         });
                                     }
-                                }
 
-                                if let Some(unmodified_game_assets_mods) = &report.unmodified_game_assets_mods {
-                                    if !unmodified_game_assets_mods.is_empty() {
+                                if let Some(unmodified_game_assets_mods) = &report.unmodified_game_assets_mods
+                                    && !unmodified_game_assets_mods.is_empty() {
                                         CollapsingHeader::new(
                                             RichText::new(
                                                 "⚠ Mod(s) with unmodified game assets detected",
@@ -1549,7 +1544,6 @@ impl App {
                                             });
                                         });
                                     }
-                                }
                             });
                     } else {
                         ui.spinner();
@@ -1577,9 +1571,8 @@ impl App {
     }
 }
 
-fn sort_mods(
-    config: SortingConfig,
-) -> impl Fn((&ModOrGroup, Option<&ModInfo>), (&ModOrGroup, Option<&ModInfo>)) -> Ordering {
+type ModListEntry<'a> = (&'a ModOrGroup, Option<&'a ModInfo>);
+fn sort_mods(config: SortingConfig) -> impl Fn(ModListEntry, ModListEntry) -> Ordering {
     move |(a, info_a), (b, info_b)| {
         if matches!(a, ModOrGroup::Group { .. }) || matches!(b, ModOrGroup::Group { .. }) {
             unimplemented!("Groups in sorting not implemented");
@@ -1706,13 +1699,8 @@ impl eframe::App for App {
         if !self.has_run_init {
             self.has_run_init = true;
 
-            ctx.set_visuals(
-                self.state
-                    .config
-                    .gui_theme
-                    .map(GuiTheme::visuals)
-                    .unwrap_or_else(|| self.default_visuals.clone()),
-            );
+            let theme = GuiTheme::into_egui_theme(self.state.config.gui_theme);
+            ctx.memory_mut(|m| m.options.theme_preference = theme);
 
             message::CheckUpdates::send(self, ctx);
         }
@@ -1740,8 +1728,8 @@ impl eframe::App for App {
                         && self.self_update_rid.is_none()
                         && self.state.config.drg_pak_path.is_some(),
                     |ui| {
-                        if let Some(args) = &self.args {
-                            if ui
+                        if let Some(args) = &self.args
+                            && ui
                                 .button("Launch game")
                                 .on_hover_ui(|ui| {
                                     for arg in args {
@@ -1749,16 +1737,17 @@ impl eframe::App for App {
                                     }
                                 })
                                 .clicked()
-                            {
-                                let args = args.clone();
-                                tokio::task::spawn_blocking(move || {
-                                    let mut iter = args.iter();
-                                    std::process::Command::new(iter.next().unwrap())
-                                        .args(iter)
-                                        .spawn()
-                                        .unwrap();
-                                });
-                            }
+                        {
+                            let args = args.clone();
+                            std::thread::spawn(move || {
+                                let mut iter = args.iter();
+                                std::process::Command::new(iter.next().unwrap())
+                                    .args(iter)
+                                    .spawn()
+                                    .unwrap()
+                                    .wait()
+                                    .unwrap();
+                            });
                         }
 
                         ui.add_enabled_ui(self.state.config.drg_pak_path.is_some(), |ui| {
@@ -1872,22 +1861,17 @@ impl eframe::App for App {
                 if ui.button("⚙").on_hover_text("Open settings").clicked() {
                     self.settings_window = Some(WindowSettings::new(&self.state));
                 }
-                if let Some(available_update) = &self.available_update {
-                    if ui
+                if let Some(available_update) = &self.available_update
+                    && ui
                         .button(egui::RichText::new("\u{26A0}").color(ui.visuals().warn_fg_color))
                         .on_hover_text(format!(
                             "Update available: {}\n{}",
                             available_update.tag_name, available_update.html_url
                         ))
                         .clicked()
-                    {
-                        ui.ctx().output_mut(|o| {
-                            o.open_url = Some(egui::output::OpenUrl {
-                                url: available_update.html_url.clone(),
-                                new_tab: true,
-                            });
-                        });
-                    }
+                {
+                    ui.ctx()
+                        .open_url(egui::OpenUrl::new_tab(&available_update.html_url));
                 }
                 ui.with_layout(egui::Layout::left_to_right(Align::TOP), |ui| {
                     if let Some(last_action) = &self.last_action {
@@ -1916,11 +1900,10 @@ impl eframe::App for App {
             });
         });
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.set_enabled(
-                self.integrate_rid.is_none()
-                    && self.update_rid.is_none()
-                    && self.lint_rid.is_none(),
-            );
+            if self.integrate_rid.is_some() || self.update_rid.is_some() || self.lint_rid.is_some()
+            {
+                ui.disable();
+            }
             // profile selection
 
             let buttons = |ui: &mut Ui, mod_data: &mut ModData| {
@@ -1935,7 +1918,7 @@ impl eframe::App for App {
                         mods.push(mc.clone());
                     });
                     let mods = Self::build_mod_string(&mods);
-                    ui.output_mut(|o| o.copied_text = mods);
+                    ui.ctx().copy_text(mods);
                 }
 
                 // TODO find better icon, flesh out multiple-view usage, fix GUI locking
@@ -2039,8 +2022,11 @@ impl eframe::App for App {
                     text_edit = text_edit.text_color(ui.visuals().error_fg_color);
                 }
                 let res = ui
-                    .child_ui(ui.max_rect(), egui::Layout::bottom_up(Align::RIGHT))
-                    .add(text_edit);
+                    .scope_builder(
+                        egui::UiBuilder::new().layout(egui::Layout::bottom_up(Align::RIGHT)),
+                        |ui| ui.add(text_edit),
+                    )
+                    .inner;
                 if res.changed() {
                     self.scroll_to_match = true;
                 }
@@ -2061,7 +2047,7 @@ impl eframe::App for App {
             self.ui_profile(ui, &profile);
 
             // must access memory outside of input lock to prevent deadlock
-            let is_anything_focused = ctx.memory(|m| m.focus().is_some());
+            let is_anything_focused = ctx.memory(|m| m.focused().is_some());
             ctx.input(|i| {
                 if !i.raw.dropped_files.is_empty()
                     && self.integrate_rid.is_none()

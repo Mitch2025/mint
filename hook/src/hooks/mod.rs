@@ -6,12 +6,11 @@ use std::{
     ffi::c_void,
     path::{Path, PathBuf},
     ptr::NonNull,
-    sync::Arc,
+    sync::OnceLock,
 };
 
 use anyhow::{Context, Result};
 use fs_err as fs;
-use hook_resolvers::GasFixResolution;
 use mint_lib::DRGInstallationType;
 use windows::Win32::System::Memory::{VirtualProtect, PAGE_EXECUTE_READWRITE};
 
@@ -48,6 +47,10 @@ pub unsafe fn initialize() -> Result<()> {
             exec_get_mod_json as ExecFn,
         ),
         (
+            "/Game/_mint/BPL_MINT.BPL_MINT_C:GetUpdateAvailable",
+            exec_get_update_available as ExecFn,
+        ),
+        (
             "/Script/Engine.KismetSystemLibrary:PrintString",
             exec_print_string as ExecFn,
         ),
@@ -78,7 +81,7 @@ pub unsafe fn initialize() -> Result<()> {
                 if let Some(hook) = hooks.get(path.as_str()) {
                     function
                         .function_flags
-                        .insert(ue::EFunctionFlags::FUNC_Native | ue::EFunctionFlags::FUNC_Final);
+                        .insert(ue::EFunctionFlags::FUNC_Native);
                     function.func = *hook;
                 }
             }
@@ -87,12 +90,6 @@ pub unsafe fn initialize() -> Result<()> {
     HookUFunctionBind.enable()?;
 
     server_list::init_hooks()?;
-
-    if !globals().meta.config.disable_fix_exploding_gas {
-        if let Ok(gas_fix) = &globals().resolution.gas_fix {
-            apply_gas_fix(gas_fix)?;
-        }
-    }
 
     let installation_type = DRGInstallationType::from_exe_path()?;
 
@@ -106,17 +103,16 @@ pub unsafe fn initialize() -> Result<()> {
             }
         }
         DRGInstallationType::Xbox => {
-            SAVES_DIR = Some(
-                std::env::current_exe()
-                    .ok()
-                    .as_deref()
-                    .and_then(Path::parent)
-                    .and_then(Path::parent)
-                    .and_then(Path::parent)
-                    .context("could not determine save location")?
-                    .join("Saved")
-                    .join("SaveGames"),
-            );
+            let saves_dir = std::env::current_exe()
+                .ok()
+                .as_deref()
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+                .context("could not determine save location")?
+                .join("Saved")
+                .join("SaveGames");
+            SAVES_DIR.get_or_init(|| saves_dir);
 
             if let Ok(save_game) = &globals().resolution.save_game {
                 SaveGameToSlot
@@ -144,45 +140,6 @@ pub unsafe fn initialize() -> Result<()> {
     Ok(())
 }
 
-unsafe fn apply_gas_fix(gas_fix: &Arc<GasFixResolution>) -> Result<()> {
-    #[repr(C)]
-    struct UObjectTemperatureComponent {
-        padding: [u8; 0xd8],
-        on_start_burning: [u64; 2],
-        on_frozen_server: [u64; 2],
-        temperature_change_scale: f32,
-        burn_temperature: f32,
-        freeze_temperature: f32,
-        douse_fire_temperature: f32,
-        cooling_rate: f32,
-        is_heatsource_when_on_fire: bool,
-        on_fire_heat_range: f32,
-        timer_handle: u64,
-        is_object_on_fire: bool,
-        current_temperature: f32,
-    }
-
-    let fn_process_multicast_delegate: unsafe extern "system" fn(*mut c_void, *mut c_void) =
-        std::mem::transmute(gas_fix.process_multicast_delegate.0);
-
-    UObjectTemperatureComponentTimerCallback.initialize(
-        std::mem::transmute(gas_fix.timer_callback.0),
-        move |this| {
-            let obj = &*(this as *const UObjectTemperatureComponent);
-            let on_fire = obj.is_object_on_fire;
-            UObjectTemperatureComponentTimerCallback.call(this);
-            if !on_fire && obj.is_object_on_fire {
-                fn_process_multicast_delegate(
-                    std::ptr::addr_of!(obj.on_start_burning) as *mut c_void,
-                    std::ptr::null_mut(),
-                );
-            }
-        },
-    )?;
-    UObjectTemperatureComponentTimerCallback.enable()?;
-    Ok(())
-}
-
 unsafe fn patch_mem(address: *mut u8, patch: impl AsRef<[u8]>) -> Result<()> {
     let patch = patch.as_ref();
     let patch_mem = std::slice::from_raw_parts_mut(address, patch.len());
@@ -207,14 +164,14 @@ unsafe fn patch_mem(address: *mut u8, patch: impl AsRef<[u8]>) -> Result<()> {
     Ok(())
 }
 
-static mut SAVES_DIR: Option<PathBuf> = None;
+static SAVES_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 fn get_path_for_slot(slot_name: &ue::FString) -> Option<PathBuf> {
     let mut str_path = slot_name.to_string();
     str_path.push_str(".sav");
 
     let path = std::path::Path::new(&str_path);
-    let mut normalized_path = unsafe { SAVES_DIR.as_ref() }?.clone();
+    let mut normalized_path = SAVES_DIR.get().unwrap().clone();
 
     for component in path.components() {
         if let std::path::Component::Normal(c) = component {
@@ -300,7 +257,7 @@ fn detour_main(
     };
 
     // about to exit, drop log guard
-    drop(unsafe { LOG_GUARD.take() });
+    drop(LOG_GUARD.with_borrow_mut(|g| g.take()).unwrap());
 
     ret
 }
@@ -327,7 +284,35 @@ unsafe extern "system" fn exec_get_mod_json(
 
     std::mem::forget(ret);
 
-    stack.code = stack.code.add(1);
+    if !stack.code.is_null() {
+        stack.code = stack.code.add(1);
+    }
+}
+
+unsafe extern "system" fn exec_get_update_available(
+    _context: *mut ue::UObject,
+    stack: *mut ue::kismet::FFrame,
+    _result: *mut c_void,
+) {
+    let stack = stack.as_mut().unwrap();
+
+    let _ctx: Option<&ue::UObject> = stack.arg();
+
+    stack.arg::<bool>();
+    let done_checking = &mut *(stack.most_recent_property_address as *mut bool);
+    *done_checking = true;
+
+    stack.arg::<bool>();
+    let available = &mut *(stack.most_recent_property_address as *mut bool);
+    *available = false;
+
+    std::mem::forget(stack.arg::<ue::FString>());
+    let version = &mut *(stack.most_recent_property_address as *mut ue::FString);
+    *version = ue::FString::new();
+
+    if !stack.code.is_null() {
+        stack.code = stack.code.add(1);
+    }
 }
 
 unsafe extern "system" fn exec_print_string(
@@ -346,5 +331,7 @@ unsafe extern "system" fn exec_print_string(
 
     println!("PrintString({string})");
 
-    stack.code = stack.code.add(1);
+    if !stack.code.is_null() {
+        stack.code = stack.code.add(1);
+    }
 }
