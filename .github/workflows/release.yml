@@ -37,6 +37,7 @@ permissions:
 # If there's a prerelease-style suffix to the version then the Github Release™
 # will be marked as a prerelease.
 on:
+  workflow_dispatch:
   push:
     tags:
       - '*-?v[0-9]+*'
