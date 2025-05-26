@@ -6,39 +6,38 @@ permissions:
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    tags:
+      - 'v*'
 
 jobs:
   create-release:
     runs-on: ubuntu-latest
     outputs:
-      has-releases: ${{ steps.set-outputs.outputs.has-releases }}
       version_tag: ${{ steps.set-outputs.outputs.version_tag }}
+      has-releases: ${{ steps.set-outputs.outputs.has-releases }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v3
-
       - name: Install Rust
         run: rustup update nightly --no-self-update && rustup default nightly
-
       - name: Install cargo-dist
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.0.7/cargo-dist-installer.sh | sh
-
-      - name: Determine version tag
+      - name: Determine version tag and create release
         id: set-outputs
         run: |
-          # Use the tag if available, otherwise fallback to a dynamic version
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             VERSION_TAG="${GITHUB_REF_NAME}"
           else
-            VERSION_TAG="auto-${GITHUB_RUN_NUMBER}"
+            METADATA=$(cargo metadata --no-deps --format-version=1)
+            VERSION=$(echo "$METADATA" | jq -r '.packages[0].version')
+            PACKAGE=$(echo "$METADATA" | jq -r '.packages[0].name')
+            VERSION_TAG="${PACKAGE}-v${VERSION}"
           fi
+
           echo "Using version tag: $VERSION_TAG"
           echo "version_tag=$VERSION_TAG" >> "$GITHUB_OUTPUT"
 
-          # Plan the dist and generate manifest
           cargo dist plan --tag="$VERSION_TAG" --output-format=json > dist-manifest.json
           echo "dist plan ran successfully"
           cat dist-manifest.json
@@ -68,39 +67,31 @@ jobs:
           - os: windows-2019
             dist-args: --artifacts=local --target=x86_64-pc-windows-msvc
             install-dist: irm https://github.com/axodotdev/cargo-dist/releases/download/v0.0.7/cargo-dist-installer.ps1 | iex
-
     runs-on: ${{ matrix.os }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      VERSION_TAG: ${{ needs.create-release.outputs.version_tag }}
     steps:
       - uses: actions/checkout@v3
-
       - name: Install Rust
         run: rustup update nightly --no-self-update && rustup default nightly
-
       - name: Install x86_64-pc-windows-gnu target
         if: runner.os == 'Linux' || runner.os == 'macOS'
         run: rustup target add x86_64-pc-windows-gnu
-
       - name: Cache Dependencies
         uses: Swatinem/rust-cache@v2
-
       - name: Install cargo-dist
         run: ${{ matrix.install-dist }}
-
       - name: Install packages (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install libgtk-3-dev gcc-mingw-w64
-
       - name: Install packages (MacOS)
         if: runner.os == 'macOS'
         run: |
           NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
           brew install mingw-w64
-
       - name: Run cargo-dist
         run: |
+          VERSION_TAG="${{ needs.create-release.outputs.version_tag }}"
           cargo dist build --tag="$VERSION_TAG" --output-format=json ${{ matrix.dist-args }} > dist-manifest.json
           echo "dist ran successfully"
           cat dist-manifest.json
@@ -117,10 +108,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      VERSION_TAG: ${{ needs.create-release.outputs.version_tag }}
     steps:
       - uses: actions/checkout@v3
-
-      - name: mark release as non-draft
+      - name: Mark release as non-draft
         run: |
+          VERSION_TAG="${{ needs.create-release.outputs.version_tag }}"
           gh release edit "$VERSION_TAG" --draft=false
