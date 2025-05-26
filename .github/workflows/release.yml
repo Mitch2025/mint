@@ -39,6 +39,8 @@ permissions:
 on:
   workflow_dispatch:
   push:
+    tags:
+      - 'v*'
 
 jobs:
   # Create the Github Release™ so the packages have something to be uploaded to
