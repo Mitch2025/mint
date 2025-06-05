@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-repository = "https://github.com/trumank/mint"
+repository = "https://github.com/mitch2025/mint"
 authors = ["trumank", "jieyouxu"]
 license = "MIT OR Apache-2.0"
 version = "0.2.12"
