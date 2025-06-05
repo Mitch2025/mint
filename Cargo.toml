@@ -38,7 +38,7 @@ license.workspace = true
 version.workspace = true
 edition.workspace = true
 
-[bin]
+[[bin]]
 name = "mint"
 path = "src/main.rs"
 
