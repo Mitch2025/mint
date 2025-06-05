@@ -83,7 +83,6 @@ jobs:
     needs: create-release
     if: ${{ needs.create-release.outputs.has-releases == 'true' }}
     strategy:
-     strategy:
       matrix:
         # For these target platforms
         include:
