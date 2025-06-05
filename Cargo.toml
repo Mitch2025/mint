@@ -38,6 +38,10 @@ license.workspace = true
 version.workspace = true
 edition.workspace = true
 
+[bin]
+name = "mint"
+path = "src/main.rs"
+
 [features]
 default = ["hook", "oodle_platform_dependent"]
 hook = ["dep:hook"]
