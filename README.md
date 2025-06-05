@@ -1,4 +1,4 @@
-# mint
+# mint unoffical release
 
 3rd party mod integration tool for Deep Rock Galactic to download and integrate mods completely
 externally of the game. This enables more stable mod usage as well as offline mod usage. Works for
